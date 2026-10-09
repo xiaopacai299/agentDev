@@ -7,6 +7,7 @@ from langchain.chat_models import init_chat_model
 
 from agentdev.config import Settings
 from agentdev.tools import calculate, get_current_location, get_current_time, get_weather
+from agentdev.workspace import bash, edit, read, write
 
 # 步骤 1：约定助手何时调用工具
 SYSTEM_PROMPT = """你是一个简洁的助手。
@@ -14,6 +15,7 @@ SYSTEM_PROMPT = """你是一个简洁的助手。
 需要精确计算时调用 calculate，不要心算。
 需要用户当前位置时调用 get_current_location。
 需要天气或未来出行参考时调用 get_weather。用户指定了城市就传入 place；问当前位置时不要传 place。问今天时 days 用 1；问未来某天或连续几天时传入 start_date（YYYY-MM-DD）和 days。
+需要查看文件时调用 read，新建或重写文件时调用 write，修改一小段时调用 edit，执行命令时调用 bash。这些操作可以指向任意目录。删除文件必须通过 bash，并等待用户确认。
 回答使用简体中文。"""
 
 
@@ -50,7 +52,16 @@ def build_model(settings: Settings):
 
 
 # 步骤 4：列出规划器可见的工具
-AGENT_TOOLS = [get_current_time, calculate, get_current_location, get_weather]
+AGENT_TOOLS = [
+    get_current_time,
+    calculate,
+    get_current_location,
+    get_weather,
+    read,
+    write,
+    edit,
+    bash,
+]
 
 
 def tool_catalog() -> list[str]:

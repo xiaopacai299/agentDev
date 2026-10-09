@@ -54,15 +54,16 @@ def test_travel_plan_uses_retrieval_calculation_and_review_retry():
         assert "553" in task
         return f"553+420+600={TOTAL}"
 
-    def write_fn(goal, retrieval, calculation, review_note):
+    def write_fn(goal, retrieval, calculation, workspace, review_note):
         calls["write"] += 1
         assert WEATHER in retrieval
         assert TOTAL in calculation
+        assert workspace == ""
         if review_note:
             return f"上海{WEATHER}。总花费 {TOTAL} 元，带伞可以出门。"
         return "可以出门。"
 
-    def review_fn(goal, draft, retrieval, calculation):
+    def review_fn(goal, draft, retrieval, calculation, workspace):
         if TOTAL not in draft or "小雨" not in draft:
             return False, "草稿没有同时写明天气和小雨对应的总花费"
         return True, "天气和总花费都在"
@@ -72,6 +73,7 @@ def test_travel_plan_uses_retrieval_calculation_and_review_retry():
         plan_fn,
         retrieval_fn,
         calculation_fn,
+        lambda task: "",
         write_fn,
         review_fn,
         save_fn=lambda current: None,

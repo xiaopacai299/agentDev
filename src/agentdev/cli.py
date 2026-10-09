@@ -49,6 +49,8 @@ def show_agent_event(kind: str, text: str) -> None:
         paint(f"检索 Agent: {preview}", "34")
     elif kind == "calculation":
         paint(f"计算 Agent: {preview}", "33")
+    elif kind == "workspace":
+        paint(f"工程 Agent: {preview}", "34")
     elif kind == "writing":
         paint("写作 Agent:", ANSWER)
     elif kind == "review":
