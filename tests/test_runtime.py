@@ -137,36 +137,53 @@ def test_consume_stream_prints_tool_before_later_tokens():
     assert observations[0]["result"] == "晴"
 
 
-def test_run_turn_updates_state_and_saves():
+def test_run_turn_stops_when_model_stops_calling_tools():
     state = new_state()
     state.messages.append({"role": "user", "content": "算一下"})
     saved: list[AgentState] = []
+    rounds = {"count": 0}
 
-    def plan_fn(goal: str) -> list[str]:
-        return ["调用计算器", "回答用户"]
-
-    def execute_fn(current, step_text, prior):
-        return f"完成:{step_text}", [{"tool": "calculate", "args": {}, "result": "2"}]
-
-    result = run_turn(state, plan_fn, execute_fn, saved.append)
-    assert [step.status for step in result.plan] == ["done", "done"]
-    assert result.status == "done"
-    assert result.messages[-1]["content"] == "完成:回答用户"
-    assert result.observations[-1]["tool"] == "calculate"
-    assert saved[-1].status == "done"
-
-
-def test_run_turn_stops_at_max_steps():
-    state = new_state()
-    state.messages.append({"role": "user", "content": "很多步"})
+    def generate_fn(transcript):
+        rounds["count"] += 1
+        if rounds["count"] == 1:
+            call = {"name": "calculate", "args": {"expression": "1+1"}, "id": "1"}
+            return "", [call], {"role": "assistant", "content": "", "tool_calls": [call]}
+        assert any(getattr(item, "content", None) == "2" for item in transcript)
+        return "答案是 2", [], None
 
     result = run_turn(
         state,
-        plan_fn=lambda goal: ["一步", "二步", "三步"],
-        execute_fn=lambda current, step_text, prior: ("ok", []),
-        save_fn=lambda current: None,
-        max_steps=1,
+        plan_fn=lambda goal: ["调用计算器", "回答用户"],
+        generate_fn=generate_fn,
+        run_tool_fn=lambda call: "2",
+        save_fn=saved.append,
     )
-    assert result.status == "failed"
-    assert result.step_count == 1
-    assert result.plan[1].result == "已达到本轮最大步数"
+    assert result.status == "done"
+    assert result.messages[-1]["content"] == "答案是 2"
+    assert result.observations[-1]["tool"] == "calculate"
+    assert result.step_count == 2
+    assert saved[-1].status == "done"
+
+
+def test_run_turn_keeps_going_past_the_old_step_cap():
+    state = new_state()
+    state.messages.append({"role": "user", "content": "连续查几次"})
+    rounds = {"count": 0}
+
+    def generate_fn(transcript):
+        rounds["count"] += 1
+        if rounds["count"] < 6:
+            call = {"name": "calculate", "args": {}, "id": str(rounds["count"])}
+            return "", [call], {"role": "assistant", "tool_calls": [call]}
+        return "完成", [], None
+
+    result = run_turn(
+        state,
+        plan_fn=lambda goal: ["一步"],
+        generate_fn=generate_fn,
+        run_tool_fn=lambda call: "ok",
+        save_fn=lambda current: None,
+    )
+    assert result.status == "done"
+    assert result.step_count == 6
+    assert len(result.observations) == 5

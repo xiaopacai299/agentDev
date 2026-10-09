@@ -2,6 +2,8 @@ import pytest
 
 from agentdev.tools import (
     evaluate_expression,
+    forecast_window,
+    format_daily_lines,
     format_location,
     format_weather,
     get_current_time,
@@ -63,6 +65,29 @@ def test_format_weather_includes_conditions():
     assert "22.1°C" in text
     assert "今日最高/最低: 25.8°C / 13.8°C" in text
     assert "Open-Meteo" in text
+
+
+def test_forecast_window_counts_forward_from_start():
+    start, end, count = forecast_window("2026-10-10", 3)
+    assert (start, end, count) == ("2026-10-10", "2026-10-12", 3)
+    assert forecast_window("", 1) == (None, None, 1)
+    assert forecast_window("2026-10-10", 30)[2] == 16
+
+
+def test_format_daily_lines_lists_each_day():
+    lines = format_daily_lines(
+        {
+            "time": ["2026-10-10", "2026-10-11"],
+            "weather_code": [0, 61],
+            "temperature_2m_max": [26, 22],
+            "temperature_2m_min": [14, 15],
+            "precipitation_sum": [0, 3.2],
+            "precipitation_probability_max": [10, 70],
+        }
+    )
+    assert "2026-10-10 周六: 晴，14–26°C" in lines[0]
+    assert "降水概率 70%" in lines[1]
+    assert "小雨" in lines[1]
 
 
 def test_format_location_explains_denied_permission():

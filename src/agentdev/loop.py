@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from agentdev.agent import message_text
+from langchain_core.messages import ToolMessage
+
+from agentdev.agent import SYSTEM_PROMPT, message_text
 from agentdev.state import AgentState, PlanStep
 
-# 步骤 1：约定一轮最多执行几步
-MAX_STEPS_PER_TURN = 4
+# 步骤 1：只在模型停不下来时打断，正常结束条件是不再调用工具
+SAFETY_ROUNDS = 20
 
 
 # 步骤 2：从本次模型回复里收集工具调用
@@ -86,41 +88,64 @@ def consume_agent_stream(agent, messages, on_token=None, on_tool=None) -> tuple[
     return "".join(parts).strip(), extract_observations(collected)
 
 
-# 步骤 5：让带工具的 Agent 完成当前这一步
-def execute_step(
-    agent,
-    state: AgentState,
-    step_text: str,
-    prior: list[str],
-    on_token=None,
-    on_tool=None,
-) -> tuple[str, list[dict]]:
-    # 步骤 1：拼出只针对当前步骤的指令
-    done = "\n".join(prior) or "无"
-    instruction = (
-        f"当前要完成的步骤：{step_text}\n"
-        f"本轮前面步骤的结果：\n{done}\n"
-        "对话历史里已经说明的人物和事实直接使用，不要把代词当成没有指代对象。\n"
-        "需要外部能力时调用工具。用简体中文给出这一步的结果。"
+# 步骤 5：拼出带计划和历史的模型输入
+def build_transcript(state: AgentState) -> list:
+    plan = "\n".join(f"{index}. {step.text}" for index, step in enumerate(state.plan, 1))
+    system = (
+        f"{SYSTEM_PROMPT}\n"
+        f"本轮计划：\n{plan}\n"
+        "可以多次调用工具。信息足够、不再调用工具时，直接给出最终答案。"
     )
     history = [item for item in state.messages if item.get("role") in {"user", "assistant"}]
-    # 步骤 2：流式执行并收集工具结果
-    return consume_agent_stream(
-        agent,
-        [*history, {"role": "user", "content": instruction}],
-        on_token=on_token,
-        on_tool=on_tool,
+    return [{"role": "system", "content": system}, *history]
+
+
+# 步骤 6：请求一次模型，有工具调用就返回调用，没有则返回最终答案
+def run_model_round(model, tools, transcript, on_token=None) -> tuple[str, list, object | None]:
+    # 步骤 1：流式接收这一次生成
+    gathered = None
+    for chunk in model.bind_tools(tools).stream(transcript):
+        gathered = chunk if gathered is None else gathered + chunk
+        text = visible_text(chunk)
+        if text and on_token:
+            on_token(text)
+    if gathered is None:
+        return "", [], None
+    # 步骤 2：区分工具调用和最终答案
+    tool_calls = list(getattr(gathered, "tool_calls", None) or [])
+    return message_text(gathered), tool_calls, gathered
+
+
+# 步骤 7：执行一个工具调用
+def run_registered_tool(tools, call: dict) -> str:
+    found = {item.name: item for item in tools}
+    tool = found.get(call.get("name"))
+    if tool is None:
+        return f"没有这个工具：{call.get('name')}"
+    try:
+        return str(tool.invoke(call.get("args") or {}))
+    except Exception as exc:
+        return f"工具执行失败：{exc}"
+
+
+def tool_result_message(call: dict, result: str) -> ToolMessage:
+    return ToolMessage(
+        content=result,
+        tool_call_id=str(call.get("id") or ""),
+        name=str(call.get("name") or ""),
     )
 
 
-# 步骤 6：按计划循环，直到步骤完成或达到上限
+# 步骤 8：按「有工具就继续，没有工具就结束」循环
 def run_turn(
     state: AgentState,
     plan_fn: Callable[[str], list[str]],
-    execute_fn: Callable[[AgentState, str, list[str]], tuple[str, list[dict]]],
+    generate_fn: Callable[[list], tuple[str, list, object | None]],
+    run_tool_fn: Callable[[dict], str],
     save_fn: Callable[[AgentState], None],
-    max_steps: int = MAX_STEPS_PER_TURN,
     on_plan: Callable[[list[PlanStep]], None] | None = None,
+    on_tool: Callable[[list[dict]], None] | None = None,
+    safety_rounds: int = SAFETY_ROUNDS,
 ) -> AgentState:
     # 步骤 1：规划并写入状态
     state.status = "planning"
@@ -131,34 +156,50 @@ def run_turn(
     if on_plan:
         on_plan(state.plan)
 
-    # 步骤 2：逐步执行，每步更新状态并保存
+    # 步骤 2：模型还在调用工具就执行并写回，不再调用就结束
     state.status = "running"
-    prior: list[str] = []
-    taken = 0
-    for step in state.plan:
-        if taken >= max_steps:
+    transcript = build_transcript(state)
+    final = ""
+    rounds = 0
+    while True:
+        rounds += 1
+        if rounds > safety_rounds:
             state.status = "failed"
-            step.result = "已达到本轮最大步数"
+            final = final or "工具调用未能结束"
             break
-        step.status = "doing"
-        save_fn(state)
         try:
-            reply, observations = execute_fn(state, step.text, prior)
+            text, tool_calls, ai_message = generate_fn(transcript)
         except Exception as exc:
-            reply, observations = f"这一步失败：{exc}", []
             state.status = "failed"
-        step.result = reply
-        step.status = "done"
-        state.observations.extend(observations)
-        state.step_count += 1
-        taken += 1
-        prior.append(f"{step.text}: {reply}")
-        save_fn(state)
-        if state.status == "failed":
+            final = f"这一步失败：{exc}"
             break
+        state.step_count += 1
+        if not tool_calls:
+            final = text
+            break
+        if ai_message is not None:
+            transcript.append(ai_message)
+        observations = []
+        for call in tool_calls:
+            result = run_tool_fn(call)
+            observations.append(
+                {
+                    "tool": call.get("name") or "",
+                    "args": call.get("args") or {},
+                    "result": result,
+                }
+            )
+            transcript.append(tool_result_message(call, result))
+        if on_tool and observations:
+            on_tool(observations)
+        state.observations.extend(observations)
+        save_fn(state)
 
     # 步骤 3：把最终回答写回会话
-    final = next((step.result for step in reversed(state.plan) if step.result), "")
+    for step in state.plan:
+        step.status = "done"
+        if not step.result:
+            step.result = final
     state.messages.append({"role": "assistant", "content": final})
     if state.status != "failed":
         state.status = "done"

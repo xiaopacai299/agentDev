@@ -9,7 +9,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from langchain.tools import tool
 
@@ -202,50 +202,116 @@ def geocode_place(place: str) -> dict:
     }
 
 
-# 步骤 11：按坐标请求当前天气
-def fetch_forecast(latitude: float, longitude: float) -> dict:
-    query = urllib.parse.urlencode(
-        {
-            "latitude": latitude,
-            "longitude": longitude,
-            "current": (
-                "temperature_2m,relative_humidity_2m,apparent_temperature,"
-                "weather_code,wind_speed_10m,precipitation"
-            ),
-            "daily": "temperature_2m_max,temperature_2m_min",
-            "timezone": "auto",
-            "forecast_days": 1,
-        }
+# 步骤 11：把出发日期和天数收成预报区间
+def forecast_window(start_date: str, days: int) -> tuple[str | None, str | None, int]:
+    # 步骤 1：天数限制在接口允许的 1 到 16 天
+    count = max(1, min(int(days), 16))
+    if not start_date.strip():
+        return None, None, count
+    # 步骤 2：从出发日向后推算结束日
+    start = datetime.strptime(start_date.strip(), "%Y-%m-%d").date()
+    end = start + timedelta(days=count - 1)
+    return start.isoformat(), end.isoformat(), count
+
+
+# 步骤 12：按坐标请求当前天气和逐日预报
+def fetch_forecast(
+    latitude: float,
+    longitude: float,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    days: int = 1,
+) -> dict:
+    # 步骤 1：组装当天实况和逐日预报字段
+    params: dict[str, object] = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "daily": (
+            "weather_code,temperature_2m_max,temperature_2m_min,"
+            "precipitation_sum,precipitation_probability_max"
+        ),
+        "timezone": "auto",
+    }
+    today = datetime.now().astimezone().date().isoformat()
+    if start_date is None or start_date == today:
+        params["current"] = (
+            "temperature_2m,relative_humidity_2m,apparent_temperature,"
+            "weather_code,wind_speed_10m,precipitation"
+        )
+    # 步骤 2：未指定出发日时从今天起查，否则按日期区间查
+    if start_date and end_date:
+        params["start_date"] = start_date
+        params["end_date"] = end_date
+    else:
+        params["forecast_days"] = days
+    return http_get_json(
+        "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(params)
     )
-    return http_get_json(f"https://api.open-meteo.com/v1/forecast?{query}")
 
 
-# 步骤 12：把天气结果写成中文说明
-def format_weather(place_name: str, payload: dict) -> str:
-    # 步骤 1：读取当前天气和今日温度范围
-    current = payload["current"]
-    daily = payload.get("daily") or {}
-    code = int(current["weather_code"])
-    # 步骤 2：拼出天气说明
-    lines = [
-        f"地点: {place_name}",
-        f"天气: {_WEATHER_LABELS.get(code, '未知')}",
-        f"气温: {current['temperature_2m']}°C",
-        f"体感: {current['apparent_temperature']}°C",
-        f"湿度: {current['relative_humidity_2m']}%",
-        f"风速: {current['wind_speed_10m']} km/h",
-        f"降水: {current['precipitation']} mm",
-    ]
+_WEEKDAYS = "一二三四五六日"
+
+
+def format_day(date_text: str) -> str:
+    day = datetime.strptime(date_text, "%Y-%m-%d").date()
+    return f"{date_text} 周{_WEEKDAYS[day.weekday()]}"
+
+
+def format_daily_lines(daily: dict) -> list[str]:
+    dates = daily.get("time") or []
+    codes = daily.get("weather_code") or []
     highs = daily.get("temperature_2m_max") or []
     lows = daily.get("temperature_2m_min") or []
-    if highs and lows:
-        lines.append(f"今日最高/最低: {highs[0]}°C / {lows[0]}°C")
+    rains = daily.get("precipitation_sum") or []
+    chances = daily.get("precipitation_probability_max") or []
+    lines: list[str] = []
+    for index, date_text in enumerate(dates):
+        code = codes[index] if index < len(codes) else None
+        label = _WEATHER_LABELS.get(int(code), "未知") if code is not None else "未知"
+        low = lows[index] if index < len(lows) else "?"
+        high = highs[index] if index < len(highs) else "?"
+        line = f"- {format_day(str(date_text))}: {label}，{low}–{high}°C"
+        if index < len(rains) and rains[index] is not None:
+            line += f"，降水 {rains[index]} mm"
+        if index < len(chances) and chances[index] is not None:
+            line += f"，降水概率 {chances[index]}%"
+        lines.append(line)
+    return lines
+
+
+# 步骤 13：把天气结果写成中文说明
+def format_weather(place_name: str, payload: dict) -> str:
+    # 步骤 1：有当天实况时先写实况
+    lines = [f"地点: {place_name}"]
+    current = payload.get("current")
+    daily = payload.get("daily") or {}
+    if current:
+        code = int(current["weather_code"])
+        lines.extend(
+            [
+                f"天气: {_WEATHER_LABELS.get(code, '未知')}",
+                f"气温: {current['temperature_2m']}°C",
+                f"体感: {current['apparent_temperature']}°C",
+                f"湿度: {current['relative_humidity_2m']}%",
+                f"风速: {current['wind_speed_10m']} km/h",
+                f"降水: {current['precipitation']} mm",
+            ]
+        )
+        highs = daily.get("temperature_2m_max") or []
+        lows = daily.get("temperature_2m_min") or []
+        if highs and lows and not daily.get("time"):
+            lines.append(f"今日最高/最低: {highs[0]}°C / {lows[0]}°C")
+    # 步骤 2：有逐日数据时写出行程预报
+    daily_lines = format_daily_lines(daily)
+    if daily_lines:
+        lines.append("预报:")
+        lines.extend(daily_lines)
     lines.append("数据来源: Open-Meteo")
     return "\n".join(lines)
 
 
-# 步骤 13：确定地点并查询天气
-def lookup_weather(place: str) -> str:
+# 步骤 14：确定地点并查询天气
+def lookup_weather(place: str, start_date: str = "", days: int = 1) -> str:
     # 步骤 1：有地名就编码，否则使用本机定位
     place = place.strip()
     if place:
@@ -262,11 +328,15 @@ def lookup_weather(place: str) -> str:
         name = "当前位置"
         latitude = float(latitude)
         longitude = float(longitude)
-    # 步骤 2：请求并格式化天气
-    return format_weather(name, fetch_forecast(latitude, longitude))
+    # 步骤 2：按出发日和天数请求并格式化预报
+    start, end, count = forecast_window(start_date, days)
+    return format_weather(
+        name,
+        fetch_forecast(latitude, longitude, start, end, count),
+    )
 
 
-# 步骤 14：注册 Agent 可调用的工具
+# 步骤 15：注册 Agent 可调用的工具
 @tool
 def get_current_time() -> str:
     """返回当前本地日期和时间，格式为 ISO 8601。"""
@@ -293,11 +363,11 @@ def get_current_location() -> str:
 
 
 @tool
-def get_weather(place: str = "") -> str:
-    """查询当前天气。place 填写城市或地区名，例如北京、上海。留空则查询本机当前位置。"""
+def get_weather(place: str = "", start_date: str = "", days: int = 1) -> str:
+    """查询天气，支持未来预报。place 是城市或地区名，例如北京、上海，留空则查本机位置。start_date 是出发日期，格式 YYYY-MM-DD，留空表示今天。days 是从出发日起连续查询的天数，范围 1 到 16。只问今天时 days 用 1；做出行计划时按行程天数填写。"""
     try:
-        # 步骤 1：按地点查询天气
-        return lookup_weather(place)
+        # 步骤 1：按地点和日期查询天气
+        return lookup_weather(place, start_date, days)
     except (
         LookupError,
         OSError,
@@ -306,6 +376,7 @@ def get_weather(place: str = "") -> str:
         subprocess.TimeoutExpired,
         json.JSONDecodeError,
         RuntimeError,
+        ValueError,
     ) as exc:
         # 步骤 2：调用失败时返回原因
         return f"无法获取天气：{exc}"

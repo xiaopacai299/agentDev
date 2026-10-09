@@ -13,7 +13,7 @@ SYSTEM_PROMPT = """你是一个简洁的助手。
 需要当前时间时调用 get_current_time。
 需要精确计算时调用 calculate，不要心算。
 需要用户当前位置时调用 get_current_location。
-需要天气时调用 get_weather。用户指定了城市就传入城市名；问当前位置的天气时不要传 place。
+需要天气或未来出行参考时调用 get_weather。用户指定了城市就传入 place；问当前位置时不要传 place。问今天时 days 用 1；问未来某天或连续几天时传入 start_date（YYYY-MM-DD）和 days。
 回答使用简体中文。"""
 
 
@@ -50,9 +50,11 @@ def build_model(settings: Settings):
 
 
 # 步骤 4：列出规划器可见的工具
+AGENT_TOOLS = [get_current_time, calculate, get_current_location, get_weather]
+
+
 def tool_catalog() -> list[str]:
-    tools = [get_current_time, calculate, get_current_location, get_weather]
-    return [f"- {item.name}: {item.description}" for item in tools]
+    return [f"- {item.name}: {item.description}" for item in AGENT_TOOLS]
 
 
 # 步骤 5：用配置创建可调用工具的 Agent
@@ -60,6 +62,6 @@ def build_agent(settings: Settings):
     model = build_model(settings)
     return create_agent(
         model=model,
-        tools=[get_current_time, calculate, get_current_location, get_weather],
+        tools=AGENT_TOOLS,
         system_prompt=SYSTEM_PROMPT,
     )

@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 import sys
 
-from agentdev.agent import build_agent, build_model, tool_catalog
+from agentdev.agent import AGENT_TOOLS, build_model, tool_catalog
 from agentdev.config import load_settings
-from agentdev.loop import execute_step, run_turn
+from agentdev.loop import run_model_round, run_registered_tool, run_turn
 from agentdev.memory import load_state, save_state
 from agentdev.planning import build_plan
 from agentdev.state import new_state
@@ -60,7 +60,6 @@ def run_chat() -> None:
     enable_ansi()
     settings = load_settings()
     model = build_model(settings)
-    agent = build_agent(settings)
     state = load_state()
 
     # 步骤 2：用灰色提示模型和会话恢复情况
@@ -99,28 +98,18 @@ def run_chat() -> None:
                 started = True
             paint(text, ANSWER, end="")
 
-        def execute(current, step_text, prior):
-            # 只把最后一步的正文流式打出来，前面的步骤只展示工具
-            is_last = current.plan[-1].status == "doing" and all(
-                item.status == "done" for item in current.plan[:-1]
-            )
-            return execute_step(
-                agent,
-                current,
-                step_text,
-                prior,
-                on_token=on_token if is_last else None,
-                on_tool=print_tools,
-            )
-
         state = run_turn(
             state,
             plan_fn=lambda goal: build_plan(
                 model, goal, tool_catalog(), state.messages[:-1]
             ),
-            execute_fn=execute,
+            generate_fn=lambda transcript: run_model_round(
+                model, AGENT_TOOLS, transcript, on_token=on_token
+            ),
+            run_tool_fn=lambda call: run_registered_tool(AGENT_TOOLS, call),
             save_fn=save_state,
             on_plan=print_plan,
+            on_tool=print_tools,
         )
         if started:
             print()
