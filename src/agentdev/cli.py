@@ -5,11 +5,10 @@ from __future__ import annotations
 import argparse
 import sys
 
-from agentdev.agent import AGENT_TOOLS, build_model, tool_catalog
+from agentdev.agent import build_model
 from agentdev.config import load_settings
-from agentdev.loop import run_model_round, run_registered_tool, run_turn
+from agentdev.graph import build_graph_runners, run_graph
 from agentdev.memory import load_state, save_state
-from agentdev.planning import build_plan
 from agentdev.state import new_state
 
 # 灰色提示、品红输入、青色计划、黄色工具、绿色回答
@@ -41,11 +40,19 @@ def paint(text: str, code: str, end: str = "\n") -> None:
     print(colored(text, code), end=end, flush=True)
 
 
-# 步骤 2：用青色打印本轮计划
-def print_plan(plan) -> None:
-    paint("计划:", PLAN)
-    for index, step in enumerate(plan, start=1):
-        paint(f"{index}. {step.text}", PLAN)
+# 步骤 2：按子 Agent 角色上色
+def show_agent_event(kind: str, text: str) -> None:
+    preview = text if len(text) <= 240 else text[:240] + "..."
+    if kind == "planning":
+        paint(f"规划 Agent: {preview}", PLAN)
+    elif kind == "retrieval":
+        paint(f"检索 Agent: {preview}", "34")
+    elif kind == "calculation":
+        paint(f"计算 Agent: {preview}", "33")
+    elif kind == "writing":
+        paint("写作 Agent:", ANSWER)
+    elif kind == "review":
+        paint(f"审校 Agent: {preview}", "32" if preview.startswith("通过") else "31")
 
 
 # 步骤 3：用黄色打印刚完成的工具
@@ -86,30 +93,22 @@ def run_chat() -> None:
             paint("已开始新会话。", HINT)
             continue
 
-        # 步骤 5：规划后流式输出回答
+        # 步骤 5：交给多个子 Agent 协作，写作内容流式输出
         state.messages.append({"role": "user", "content": user_text})
         paint("正在规划...", HINT)
         started = False
 
         def on_token(text: str) -> None:
             nonlocal started
-            if not started:
-                paint("助手: ", ANSWER, end="")
-                started = True
+            started = True
             paint(text, ANSWER, end="")
 
-        state = run_turn(
+        runners = build_graph_runners(model, on_tool=print_tools, on_token=on_token)
+        state = run_graph(
             state,
-            plan_fn=lambda goal: build_plan(
-                model, goal, tool_catalog(), state.messages[:-1]
-            ),
-            generate_fn=lambda transcript: run_model_round(
-                model, AGENT_TOOLS, transcript, on_token=on_token
-            ),
-            run_tool_fn=lambda call: run_registered_tool(AGENT_TOOLS, call),
+            *runners,
             save_fn=save_state,
-            on_plan=print_plan,
-            on_tool=print_tools,
+            on_event=show_agent_event,
         )
         if started:
             print()

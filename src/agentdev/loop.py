@@ -136,7 +136,41 @@ def tool_result_message(call: dict, result: str) -> ToolMessage:
     )
 
 
-# 步骤 8：按「有工具就继续，没有工具就结束」循环
+# 步骤 8：单个子 Agent 内部循环，没有工具调用时返回最终文字
+def run_agent_loop(
+    transcript: list,
+    generate_fn: Callable[[list], tuple[str, list, object | None]],
+    run_tool_fn: Callable[[dict], str],
+    on_tool: Callable[[list[dict]], None] | None = None,
+    safety_rounds: int = SAFETY_ROUNDS,
+) -> str:
+    # 步骤 1：还有工具调用就执行并写回对话
+    rounds = 0
+    while True:
+        rounds += 1
+        if rounds > safety_rounds:
+            return "工具调用未能结束"
+        text, tool_calls, ai_message = generate_fn(transcript)
+        if not tool_calls:
+            return text
+        if ai_message is not None:
+            transcript.append(ai_message)
+        observations = []
+        for call in tool_calls:
+            result = run_tool_fn(call)
+            observations.append(
+                {
+                    "tool": call.get("name") or "",
+                    "args": call.get("args") or {},
+                    "result": result,
+                }
+            )
+            transcript.append(tool_result_message(call, result))
+        if on_tool and observations:
+            on_tool(observations)
+
+
+# 步骤 9：按「有工具就继续，没有工具就结束」循环
 def run_turn(
     state: AgentState,
     plan_fn: Callable[[str], list[str]],
