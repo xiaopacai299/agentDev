@@ -6,13 +6,14 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 
 from agentdev.config import Settings
-from agentdev.tools import calculate, get_current_location, get_current_time
+from agentdev.tools import calculate, get_current_location, get_current_time, get_weather
 
 # 步骤 1：约定助手何时调用工具
 SYSTEM_PROMPT = """你是一个简洁的助手。
 需要当前时间时调用 get_current_time。
 需要精确计算时调用 calculate，不要心算。
 需要用户当前位置时调用 get_current_location。
+需要天气时调用 get_weather。用户指定了城市就传入城市名；问当前位置的天气时不要传 place。
 回答使用简体中文。"""
 
 
@@ -50,6 +51,6 @@ def build_agent(settings: Settings):
     model = init_chat_model(**model_kwargs)
     return create_agent(
         model=model,
-        tools=[get_current_time, calculate, get_current_location],
+        tools=[get_current_time, calculate, get_current_location, get_weather],
         system_prompt=SYSTEM_PROMPT,
     )
