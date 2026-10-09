@@ -34,8 +34,8 @@ def message_text(message) -> str:
     return "".join(parts)
 
 
-# 步骤 3：用配置创建 Agent
-def build_agent(settings: Settings):
+# 步骤 3：按配置创建聊天模型
+def build_model(settings: Settings):
     # 步骤 1：组装模型参数
     model_kwargs = {
         "model": settings.model,
@@ -46,9 +46,18 @@ def build_agent(settings: Settings):
     # 步骤 2：使用兼容接口时传入地址
     if settings.base_url:
         model_kwargs["base_url"] = settings.base_url
+    return init_chat_model(**model_kwargs)
 
-    # 步骤 3：创建模型并注册工具
-    model = init_chat_model(**model_kwargs)
+
+# 步骤 4：列出规划器可见的工具
+def tool_catalog() -> list[str]:
+    tools = [get_current_time, calculate, get_current_location, get_weather]
+    return [f"- {item.name}: {item.description}" for item in tools]
+
+
+# 步骤 5：用配置创建可调用工具的 Agent
+def build_agent(settings: Settings):
+    model = build_model(settings)
     return create_agent(
         model=model,
         tools=[get_current_time, calculate, get_current_location, get_weather],

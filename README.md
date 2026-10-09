@@ -47,7 +47,9 @@ MODEL=deepseek-chat
 .\.venv\Scripts\python.exe -m agentdev.cli
 ```
 
-输入 `exit` 退出。
+输入 `exit` 退出，输入 `new` 清空已保存的会话。
+
+每一轮会先规划步骤，再调用工具，并把状态写到 `.agent/session.json`。下次启动会恢复这次会话。
 
 ## 测试
 
@@ -60,8 +62,11 @@ MODEL=deepseek-chat
 ## 目录
 
 ```text
-src/agentdev/config.py   读取 .env
-src/agentdev/tools.py    工具
-src/agentdev/agent.py    组装 Agent
-src/agentdev/cli.py      命令行对话
+src/agentdev/state.py     状态
+src/agentdev/memory.py    会话持久化
+src/agentdev/planning.py  规划
+src/agentdev/tools.py     工具
+src/agentdev/loop.py      执行闭环
+src/agentdev/agent.py     组装模型和 Agent
+src/agentdev/cli.py       命令行对话
 ```
