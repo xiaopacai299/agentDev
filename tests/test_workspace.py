@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from agentdev.workspace import edit_file_text, read_file_text, resolve_path, run_command, write_file_text
+from agentdev.agents.assistant.workspace import (
+    edit_file_text,
+    read_file_text,
+    resolve_path,
+    run_command,
+    write_file_text,
+)
 
 
 def test_write_then_read_and_edit(tmp_path: Path):

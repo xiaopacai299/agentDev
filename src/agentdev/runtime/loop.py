@@ -6,8 +6,8 @@ from collections.abc import Callable
 
 from langchain_core.messages import ToolMessage
 
-from agentdev.agent import SYSTEM_PROMPT, message_text
-from agentdev.state import AgentState, PlanStep
+from agentdev.runtime.model import message_text
+from agentdev.runtime.state import AgentState, PlanStep
 
 # 步骤 1：只在模型停不下来时打断，正常结束条件是不再调用工具
 SAFETY_ROUNDS = 20
@@ -89,10 +89,10 @@ def consume_agent_stream(agent, messages, on_token=None, on_tool=None) -> tuple[
 
 
 # 步骤 5：拼出带计划和历史的模型输入
-def build_transcript(state: AgentState) -> list:
+def build_transcript(state: AgentState, system_prompt: str = "") -> list:
     plan = "\n".join(f"{index}. {step.text}" for index, step in enumerate(state.plan, 1))
     system = (
-        f"{SYSTEM_PROMPT}\n"
+        f"{system_prompt}\n"
         f"本轮计划：\n{plan}\n"
         "可以多次调用工具。信息足够、不再调用工具时，直接给出最终答案。"
     )
@@ -180,6 +180,7 @@ def run_turn(
     on_plan: Callable[[list[PlanStep]], None] | None = None,
     on_tool: Callable[[list[dict]], None] | None = None,
     safety_rounds: int = SAFETY_ROUNDS,
+    system_prompt: str = "",
 ) -> AgentState:
     # 步骤 1：规划并写入状态
     state.status = "planning"
@@ -192,7 +193,7 @@ def run_turn(
 
     # 步骤 2：模型还在调用工具就执行并写回，不再调用就结束
     state.status = "running"
-    transcript = build_transcript(state)
+    transcript = build_transcript(state, system_prompt)
     final = ""
     rounds = 0
     while True:

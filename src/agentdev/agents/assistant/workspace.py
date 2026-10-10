@@ -9,7 +9,7 @@ from pathlib import Path
 
 from langchain.tools import tool
 
-from agentdev.config import PROJECT_ROOT
+from agentdev.runtime.config import PROJECT_ROOT
 
 # 步骤 1：限制单次读取和命令输出的长度，并识别删除命令
 _MAX_READ_LINES = 200

@@ -12,9 +12,17 @@ class PlanStep:
     text: str
     status: str = "pending"
     result: str = ""
+    task_id: str = ""
+    owner: str = ""
 
     def to_dict(self) -> dict:
-        return {"text": self.text, "status": self.status, "result": self.result}
+        return {
+            "text": self.text,
+            "status": self.status,
+            "result": self.result,
+            "task_id": self.task_id,
+            "owner": self.owner,
+        }
 
     @classmethod
     def from_dict(cls, data: dict) -> PlanStep:
@@ -22,6 +30,8 @@ class PlanStep:
             text=str(data["text"]),
             status=str(data.get("status", "pending")),
             result=str(data.get("result", "")),
+            task_id=str(data.get("task_id", "")),
+            owner=str(data.get("owner", "")),
         )
 
 

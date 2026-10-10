@@ -1,10 +1,10 @@
 import json
 
-from agentdev.cli import colored
-from agentdev.loop import consume_agent_stream, extract_observations, run_turn, visible_text
-from agentdev.memory import load_state, save_state
-from agentdev.planning import build_plan, format_history, parse_plan
-from agentdev.state import AgentState, new_state
+from agentdev.agents.assistant.cli import colored
+from agentdev.agents.assistant.planning import build_plan, format_history, parse_plan
+from agentdev.runtime.loop import consume_agent_stream, extract_observations, run_turn, visible_text
+from agentdev.runtime.memory import load_state, save_state
+from agentdev.runtime.state import AgentState, new_state
 
 
 def test_parse_plan_reads_json_fence():

@@ -1,6 +1,6 @@
 import pytest
 
-from agentdev.tools import (
+from agentdev.agents.assistant.tools import (
     evaluate_expression,
     forecast_window,
     format_daily_lines,

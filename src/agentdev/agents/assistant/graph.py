@@ -1,4 +1,4 @@
-"""Multi-agent graph: plan, retrieve, calculate, write, then review."""
+"""Assistant graph: plan, then let the runtime run retrieval, calculation, and workspace together."""
 
 from __future__ import annotations
 
@@ -6,16 +6,18 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from agentdev.agent import message_text
-from agentdev.loop import run_agent_loop, run_model_round, run_registered_tool
-from agentdev.state import AgentState, PlanStep
-from agentdev.tools import calculate, get_current_location, get_current_time, get_weather
-from agentdev.workspace import bash, edit, read, write
+from agentdev.agents.assistant.tools import calculate, get_current_location, get_current_time, get_weather
+from agentdev.agents.assistant.workspace import bash, edit, read, write
+from agentdev.runtime.loop import run_agent_loop, run_model_round, run_registered_tool
+from agentdev.runtime.model import message_text
+from agentdev.runtime.orchestrator import SpawnRequest, build_task_rows, result_of, run_workers, step_for
+from agentdev.runtime.state import AgentState
 
-# 步骤 1：约定每个子 Agent 的职责
+# 步骤 1：约定这个助手的子 Agent 职责。这些工具列表里没有派生入口
 RETRIEVAL_TOOLS = [get_current_time, get_current_location, get_weather]
 CALCULATION_TOOLS = [calculate]
 WORKSPACE_TOOLS = [read, write, edit, bash]
+WORKER_OWNERS = ("retrieval", "calculation", "workspace")
 PLANNER_INSTRUCTION = """你是规划 Agent。把用户目标分给检索 Agent、计算 Agent、工程 Agent 和写作 Agent。
 检索 Agent 负责时间、位置和天气。计算 Agent 只负责算术。工程 Agent 负责读取、写入、编辑项目文件和执行命令。写作 Agent 负责最终回答。
 没有对应需求时，该任务用空字符串。
@@ -110,7 +112,26 @@ def stream_model(model, system: str, user: str, on_token=None) -> str:
     return "".join(parts).strip()
 
 
-# 步骤 4：按规划、检索、计算、写作、审校的顺序协作
+def _worker_requests(
+    task: AgentTask,
+    retrieval_fn: Callable[[str], str],
+    calculation_fn: Callable[[str], str],
+    workspace_fn: Callable[[str], str],
+) -> list[SpawnRequest]:
+    requests: list[SpawnRequest] = []
+    if task.retrieval_task:
+        text = task.retrieval_task
+        requests.append(SpawnRequest("retrieval", text, lambda text=text: retrieval_fn(text)))
+    if task.calculation_task:
+        text = task.calculation_task
+        requests.append(SpawnRequest("calculation", text, lambda text=text: calculation_fn(text)))
+    if task.workspace_task and workspace_fn:
+        text = task.workspace_task
+        requests.append(SpawnRequest("workspace", text, lambda text=text: workspace_fn(text)))
+    return requests
+
+
+# 步骤 4：规划、派出子 Agent、写作和审校
 def run_graph(
     state: AgentState,
     plan_fn: Callable[[str, str], AgentTask],
@@ -132,62 +153,58 @@ def run_graph(
     while True:
         attempts += 1
         task = plan_fn(goal, review_note)
-        state.plan = [
-            PlanStep(text=f"检索: {task.retrieval_task or '不需要'}"),
-            PlanStep(text=f"计算: {task.calculation_task or '不需要'}"),
-            PlanStep(text=f"工程: {task.workspace_task or '不需要'}"),
-            PlanStep(text=f"写作: {task.writing_task}"),
-        ]
+        state.plan = build_task_rows(
+            [
+                ("retrieval", task.retrieval_task),
+                ("calculation", task.calculation_task),
+                ("workspace", task.workspace_task),
+                ("writing", task.writing_task),
+                ("review", "审校草稿"),
+            ],
+            attempts,
+        )
         save_fn(state)
         if on_event:
             on_event("planning", task.writing_task)
 
-        # 步骤 2：检索和计算互相独立，都完成后再写作
-        retrieval = ""
-        if task.retrieval_task:
-            retrieval = retrieval_fn(task.retrieval_task)
-            state.observations.append(
-                {"tool": "retrieval_agent", "args": {"task": task.retrieval_task}, "result": retrieval}
-            )
-            if on_event:
-                on_event("retrieval", retrieval)
-        calculation = ""
-        if task.calculation_task:
-            calculation = calculation_fn(task.calculation_task)
-            state.observations.append(
-                {
-                    "tool": "calculation_agent",
-                    "args": {"task": task.calculation_task},
-                    "result": calculation,
-                }
-            )
-            if on_event:
-                on_event("calculation", calculation)
-        workspace = ""
-        if task.workspace_task and workspace_fn:
-            workspace = workspace_fn(task.workspace_task)
-            state.observations.append(
-                {"tool": "workspace_agent", "args": {"task": task.workspace_task}, "result": workspace}
-            )
-            if on_event:
-                on_event("workspace", workspace)
-        state.status = "running"
+        # 步骤 2：把互不依赖的子任务交给运行时，主循环在那里挂起
+        run_workers(
+            state,
+            _worker_requests(task, retrieval_fn, calculation_fn, workspace_fn),
+            save_fn,
+            on_event,
+            WORKER_OWNERS,
+        )
+        retrieval = result_of(state.plan, "retrieval")
+        calculation = result_of(state.plan, "calculation")
+        workspace = result_of(state.plan, "workspace")
+
+        # 步骤 3：子 Agent 到齐后，主循环自己完成写作和审校
+        writing = step_for(state.plan, "writing")
+        if writing is not None:
+            writing.status = "running"
         if on_event:
             on_event("writing", task.writing_task)
         draft = write_fn(goal, retrieval, calculation, workspace, review_note)
+        if writing is not None:
+            writing.status = "done"
+            writing.result = draft
+        review = step_for(state.plan, "review")
+        if review is not None:
+            review.status = "running"
         passed, reason = review_fn(goal, draft, retrieval, calculation, workspace)
+        if review is not None:
+            review.status = "done" if passed else "failed"
+            review.result = reason
         if on_event:
             on_event("review", "通过" if passed else f"未通过：{reason}")
-        for step in state.plan:
-            step.status = "done"
-            step.result = draft
         save_fn(state)
         if passed or attempts > max_reviews:
             break
         review_note = reason
         state.status = "planning"
 
-    # 步骤 3：审校通过后把草稿写回会话
+    # 步骤 4：审校结束后把草稿写回会话
     state.messages.append({"role": "assistant", "content": draft})
     state.status = "done"
     state.step_count += attempts

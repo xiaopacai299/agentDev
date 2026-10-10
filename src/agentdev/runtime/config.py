@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # 步骤 1：定位项目根目录，便于读取 .env
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 # 步骤 2：声明运行时需要的配置项

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from agentdev.agent import message_text
+from agentdev.runtime.model import message_text
 
 # 步骤 1：约定规划器只返回 JSON，并参考对话历史
 PLAN_INSTRUCTION = """你是规划器。根据对话历史、用户当前目标和可用工具，把任务拆成 1 到 3 个顺序步骤。

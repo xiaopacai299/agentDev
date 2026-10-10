@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agentdev.config import PROJECT_ROOT
-from agentdev.state import AgentState, new_state
+from agentdev.runtime.config import PROJECT_ROOT
+from agentdev.runtime.state import AgentState, new_state
 
 # 步骤 1：约定会话文件位置
 SESSION_PATH = PROJECT_ROOT / ".agent" / "session.json"
