@@ -3,7 +3,8 @@ import json
 from agentdev.agents.assistant.cli import colored
 from agentdev.agents.assistant.planning import build_plan, format_history, parse_plan
 from agentdev.runtime.loop import consume_agent_stream, extract_observations, run_turn, visible_text
-from agentdev.runtime.memory import load_state, save_state
+from agentdev.runtime.config import load_settings
+from agentdev.runtime.memory import load_state, save_state, session_path
 from agentdev.runtime.state import AgentState, new_state
 
 
@@ -46,6 +47,27 @@ def test_state_roundtrip():
     restored = AgentState.from_dict(state.to_dict())
     assert restored.session_id == state.session_id
     assert restored.messages == state.messages
+
+
+def test_session_path_follows_the_current_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentdev.runtime.memory.workspace_root", lambda: tmp_path)
+    assert session_path() == tmp_path / ".agent" / "session.json"
+
+
+def test_settings_load_home_env_then_workspace_env(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    calls: list[tuple[str, bool]] = []
+
+    def fake_load(path, override=False):
+        calls.append((str(path), override))
+
+    monkeypatch.setattr("agentdev.runtime.config.home_dir", lambda: home)
+    monkeypatch.setattr("agentdev.runtime.config.workspace_root", lambda: work)
+    monkeypatch.setattr("agentdev.runtime.config.load_dotenv", fake_load)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    load_settings()
+    assert calls == [(str(home / ".env"), True), (str(work / ".env"), True)]
 
 
 def test_memory_survives_reload(tmp_path):

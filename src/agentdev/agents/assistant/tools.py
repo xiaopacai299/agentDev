@@ -12,6 +12,7 @@ import urllib.request
 from datetime import datetime, timedelta
 
 from langchain.tools import tool
+from pydantic import BaseModel, Field
 
 # 步骤 1：只允许这些算术运算符
 _BINARY_OPS = {
@@ -204,12 +205,17 @@ def geocode_place(place: str) -> dict:
 
 # 步骤 11：把出发日期和天数收成预报区间
 def forecast_window(start_date: str, days: int) -> tuple[str | None, str | None, int]:
-    # 步骤 1：天数限制在接口允许的 1 到 16 天
-    count = max(1, min(int(days), 16))
+    # 步骤 1：天数超出 1 到 16 时拒绝，不再夹紧
+    count = int(days)
+    if count < 1 or count > 16:
+        raise ValueError("days 超出允许范围")
     if not start_date.strip():
         return None, None, count
     # 步骤 2：从出发日向后推算结束日
-    start = datetime.strptime(start_date.strip(), "%Y-%m-%d").date()
+    try:
+        start = datetime.strptime(start_date.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError("start_date 必须是 YYYY-MM-DD") from None
     end = start + timedelta(days=count - 1)
     return start.isoformat(), end.isoformat(), count
 
@@ -336,14 +342,25 @@ def lookup_weather(place: str, start_date: str = "", days: int = 1) -> str:
     )
 
 
-# 步骤 15：注册 Agent 可调用的工具
+# 步骤 15：参数约束和工具函数共用同一套模型
+class CalculateArgs(BaseModel):
+    expression: str = Field(min_length=1, max_length=200)
+
+
+class WeatherArgs(BaseModel):
+    place: str = ""
+    start_date: str = Field(default="", pattern=r"^$|^\d{4}-\d{2}-\d{2}$")
+    days: int = Field(default=1, ge=1, le=16)
+
+
+# 步骤 16：注册 Agent 可调用的工具
 @tool
 def get_current_time() -> str:
     """返回当前本地日期和时间，格式为 ISO 8601。"""
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-@tool
+@tool(args_schema=CalculateArgs)
 def calculate(expression: str) -> str:
     """计算算术表达式。支持 + - * / // % ** 和括号，例如 (2 + 3) * 4。"""
     return evaluate_expression(expression)
@@ -362,7 +379,7 @@ def get_current_location() -> str:
         return f"无法获取当前位置：{exc}"
 
 
-@tool
+@tool(args_schema=WeatherArgs)
 def get_weather(place: str = "", start_date: str = "", days: int = 1) -> str:
     """查询天气，支持未来预报。place 是城市或地区名，例如北京、上海，留空则查本机位置。start_date 是出发日期，格式 YYYY-MM-DD，留空表示今天。days 是从出发日起连续查询的天数，范围 1 到 16。只问今天时 days 用 1；做出行计划时按行程天数填写。"""
     try:

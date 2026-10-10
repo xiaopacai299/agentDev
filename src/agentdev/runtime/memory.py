@@ -5,21 +5,23 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agentdev.runtime.config import PROJECT_ROOT
+from agentdev.runtime.config import workspace_root
 from agentdev.runtime.state import AgentState, new_state
 
-# 步骤 1：约定会话文件位置
-SESSION_PATH = PROJECT_ROOT / ".agent" / "session.json"
+# 步骤 1：会话写在用户当前目录，不写进安装目录
+def session_path() -> Path:
+    return workspace_root() / ".agent" / "session.json"
 
 
 # 步骤 2：从磁盘恢复会话
-def load_state(path: Path = SESSION_PATH) -> AgentState:
+def load_state(path: Path | None = None) -> AgentState:
     # 步骤 1：没有文件时创建新会话
-    if not path.exists():
+    target = path or session_path()
+    if not target.exists():
         return new_state()
     # 步骤 2：读取并还原状态
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(target.read_text(encoding="utf-8"))
         state = AgentState.from_dict(data)
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return new_state()
@@ -30,11 +32,12 @@ def load_state(path: Path = SESSION_PATH) -> AgentState:
 
 
 # 步骤 3：把当前状态写回磁盘
-def save_state(state: AgentState, path: Path = SESSION_PATH) -> None:
+def save_state(state: AgentState, path: Path | None = None) -> None:
     # 步骤 1：确保目录存在
-    path.parent.mkdir(parents=True, exist_ok=True)
+    target = path or session_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
     # 步骤 2：整份状态覆盖写入
-    path.write_text(
+    target.write_text(
         json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

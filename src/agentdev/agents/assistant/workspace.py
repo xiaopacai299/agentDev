@@ -8,8 +8,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 from langchain.tools import tool
+from pydantic import BaseModel, Field
 
-from agentdev.runtime.config import PROJECT_ROOT
+from agentdev.runtime.config import workspace_root
+from agentdev.runtime.tool_guard import deletion_already_confirmed
 
 # 步骤 1：限制单次读取和命令输出的长度，并识别删除命令
 _MAX_READ_LINES = 200
@@ -20,10 +22,11 @@ _DELETE_COMMAND = re.compile(
 )
 
 
-def resolve_path(path: str, root: Path = PROJECT_ROOT) -> Path:
-    # 步骤 1：相对路径从项目根目录算起，绝对路径可以指向任意目录
+def resolve_path(path: str, root: Path | None = None) -> Path:
+    # 步骤 1：相对路径从当前工作目录算起，绝对路径可以指向任意目录
+    base = root if root is not None else workspace_root()
     raw = Path(path)
-    candidate = raw if raw.is_absolute() else root / raw
+    candidate = raw if raw.is_absolute() else base / raw
     return candidate.resolve()
 
 
@@ -55,7 +58,7 @@ def read_file_text(
     path: str,
     offset: int = 1,
     limit: int = _MAX_READ_LINES,
-    root: Path = PROJECT_ROOT,
+    root: Path | None = None,
 ) -> str:
     # 步骤 1：定位文件并读出全部行
     file = resolve_path(path, root)
@@ -72,18 +75,20 @@ def read_file_text(
 
 
 # 步骤 3：整文件写入
-def write_file_text(path: str, content: str, root: Path = PROJECT_ROOT) -> str:
+def write_file_text(path: str, content: str, root: Path | None = None) -> str:
     # 步骤 1：确保父目录存在后覆盖写入
-    file = resolve_path(path, root)
+    base = root if root is not None else workspace_root()
+    file = resolve_path(path, base)
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(content, encoding="utf-8")
-    return f"已写入 {describe_path(file, root)}，共 {len(content)} 个字符"
+    return f"已写入 {describe_path(file, base)}，共 {len(content)} 个字符"
 
 
 # 步骤 4：用一段原文精确替换成新文本
-def edit_file_text(path: str, old_text: str, new_text: str, root: Path = PROJECT_ROOT) -> str:
+def edit_file_text(path: str, old_text: str, new_text: str, root: Path | None = None) -> str:
     # 步骤 1：原文必须唯一，避免补丁打错位置
-    file = resolve_path(path, root)
+    base = root if root is not None else workspace_root()
+    file = resolve_path(path, base)
     if not file.is_file():
         raise FileNotFoundError(f"文件不存在：{path}")
     content = file.read_text(encoding="utf-8")
@@ -94,28 +99,28 @@ def edit_file_text(path: str, old_text: str, new_text: str, root: Path = PROJECT
         raise ValueError(f"原文出现了 {count} 次，请提供更长的上下文")
     # 步骤 2：只替换这一处
     file.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
-    return f"已替换 {describe_path(file, root)} 中的 1 处"
+    return f"已替换 {describe_path(file, base)} 中的 1 处"
 
 
 # 步骤 5：在项目根目录执行命令，删除前必须得到确认
 def run_command(
     command: str,
     timeout: int = 30,
-    root: Path = PROJECT_ROOT,
+    root: Path | None = None,
     confirm: Callable[[str], bool] | None = None,
 ) -> str:
     # 步骤 1：删除命令先询问，未确认则不执行
     if not command.strip():
         raise ValueError("命令为空")
     if is_delete_command(command):
-        approved = (confirm or confirm_delete)(command)
+        approved = deletion_already_confirmed() or (confirm or confirm_delete)(command)
         if not approved:
             return "已取消删除，命令未执行"
     wait = max(1, min(int(timeout), 60))
     try:
         completed = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            cwd=root,
+            cwd=root if root is not None else workspace_root(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -132,26 +137,56 @@ def run_command(
     return f"退出码: {completed.returncode}\n{output or '(无输出)'}"
 
 
-# 步骤 6：注册工程工具
-@tool
+# 步骤 6：用一套模型约束工程工具参数
+class ReadArgs(BaseModel):
+    path: str = Field(min_length=1)
+    offset: int = Field(default=1, ge=1)
+    limit: int = Field(default=200, ge=1, le=200)
+
+
+class WriteArgs(BaseModel):
+    path: str = Field(min_length=1)
+    content: str
+
+
+class EditArgs(BaseModel):
+    path: str = Field(min_length=1)
+    old_text: str = Field(min_length=1)
+    new_text: str
+
+
+class BashArgs(BaseModel):
+    command: str = Field(min_length=1, max_length=4000)
+    timeout: int = Field(default=30, ge=1, le=60)
+
+
+def _bash_risk(args: dict) -> str:
+    command = str(args.get("command") or "")
+    if is_delete_command(command):
+        return command
+    return ""
+
+
+# 步骤 7：注册工程工具
+@tool(args_schema=ReadArgs)
 def read(path: str, offset: int = 1, limit: int = 200) -> str:
-    """读取文本文件，返回带行号的内容。path 可以是任意目录的绝对路径，相对路径从项目根目录算起。offset 是起始行，从 1 开始。limit 是最多读取的行数。"""
+    """读取文本文件，返回带行号的内容。path 可以是任意目录的绝对路径，相对路径从当前工作目录算起。offset 是起始行，从 1 开始。limit 是最多读取的行数。"""
     try:
         return read_file_text(path, offset, limit)
     except (OSError, ValueError) as exc:
         return f"无法读取文件：{exc}"
 
 
-@tool
+@tool(args_schema=WriteArgs)
 def write(path: str, content: str) -> str:
-    """把 content 写入文件，覆盖已有内容。path 可以是任意目录的绝对路径，相对路径从项目根目录算起。适合新建文件或重写整个文件。"""
+    """把 content 写入文件，覆盖已有内容。path 可以是任意目录的绝对路径，相对路径从当前工作目录算起。适合新建文件或重写整个文件。"""
     try:
         return write_file_text(path, content)
     except (OSError, ValueError) as exc:
         return f"无法写入文件：{exc}"
 
 
-@tool
+@tool(args_schema=EditArgs)
 def edit(path: str, old_text: str, new_text: str) -> str:
     """把文件中唯一的 old_text 替换成 new_text。path 可以是任意目录的绝对路径。old_text 必须和文件内容完全一致，并且只出现一次。适合小段补丁，不要用来重写整个文件。"""
     try:
@@ -160,9 +195,9 @@ def edit(path: str, old_text: str, new_text: str) -> str:
         return f"无法编辑文件：{exc}"
 
 
-@tool
+@tool(args_schema=BashArgs, extras={"risk": "confirm", "risk_of": _bash_risk})
 def bash(command: str, timeout: int = 30) -> str:
-    """用 PowerShell 执行命令，返回退出码和输出。默认工作目录是项目根目录，命令可以访问其他目录。command 是命令文本。timeout 是最长等待秒数，最大 60。删除文件的命令会先询问用户，只有用户输入 yes 或 确认后才会执行。"""
+    """用 PowerShell 执行命令，返回退出码和输出。默认工作目录是当前目录，命令可以访问其他目录。command 是命令文本。timeout 是最长等待秒数，最大 60。删除文件的命令会先询问用户，只有用户输入 yes 或 确认后才会执行。"""
     try:
         return run_command(command, timeout)
     except (OSError, ValueError) as exc:

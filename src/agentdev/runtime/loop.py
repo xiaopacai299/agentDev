@@ -8,6 +8,7 @@ from langchain_core.messages import ToolMessage
 
 from agentdev.runtime.model import message_text
 from agentdev.runtime.state import AgentState, PlanStep
+from agentdev.runtime.tool_guard import begin_confirmed, end_confirmed, public_failure, screen_call
 
 # 步骤 1：只在模型停不下来时打断，正常结束条件是不再调用工具
 SAFETY_ROUNDS = 20
@@ -118,14 +119,24 @@ def run_model_round(model, tools, transcript, on_token=None) -> tuple[str, list,
 
 # 步骤 7：执行一个工具调用
 def run_registered_tool(tools, call: dict) -> str:
+    # 步骤 1：按名称找到已注册工具
     found = {item.name: item for item in tools}
     tool = found.get(call.get("name"))
     if tool is None:
         return f"没有这个工具：{call.get('name')}"
+    # 步骤 2：先校验参数，高风险操作等待用户确认
+    args = call.get("args") or {}
+    blocked, approved = screen_call(tool, args)
+    if blocked:
+        return blocked
+    # 步骤 3：执行工具，失败时只回传可继续重试的短句
+    token = begin_confirmed(approved)
     try:
-        return str(tool.invoke(call.get("args") or {}))
+        return str(tool.invoke(args))
     except Exception as exc:
-        return f"工具执行失败：{exc}"
+        return public_failure(exc)
+    finally:
+        end_confirmed(token)
 
 
 def tool_result_message(call: dict, result: str) -> ToolMessage:

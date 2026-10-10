@@ -7,6 +7,7 @@ from agentdev.agents.assistant.tools import (
     format_location,
     format_weather,
     get_current_time,
+    get_weather,
     place_label,
 )
 
@@ -71,7 +72,10 @@ def test_forecast_window_counts_forward_from_start():
     start, end, count = forecast_window("2026-10-10", 3)
     assert (start, end, count) == ("2026-10-10", "2026-10-12", 3)
     assert forecast_window("", 1) == (None, None, 1)
-    assert forecast_window("2026-10-10", 30)[2] == 16
+    with pytest.raises(ValueError, match="超出允许范围"):
+        forecast_window("2026-10-10", 30)
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        forecast_window("下周五", 1)
 
 
 def test_format_daily_lines_lists_each_day():
@@ -88,6 +92,31 @@ def test_format_daily_lines_lists_each_day():
     assert "2026-10-10 周六: 晴，14–26°C" in lines[0]
     assert "降水概率 70%" in lines[1]
     assert "小雨" in lines[1]
+
+
+def test_invalid_weather_args_stop_before_the_request():
+    from agentdev.runtime.loop import run_registered_tool
+
+    result = run_registered_tool(
+        [get_weather],
+        {"name": "get_weather", "args": {"days": 30, "start_date": "tomorrow"}},
+    )
+    assert "days 超出允许范围" in result
+    assert "start_date 必须符合格式" in result
+    assert "tomorrow" not in result
+    assert "http" not in result
+
+
+def test_unconfirmed_delete_is_not_executed(monkeypatch):
+    from agentdev.agents.assistant.workspace import bash
+    from agentdev.runtime.loop import run_registered_tool
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+    result = run_registered_tool(
+        [bash],
+        {"name": "bash", "args": {"command": "Remove-Item note.txt"}},
+    )
+    assert result == "用户未确认，操作已取消"
 
 
 def test_format_location_explains_denied_permission():

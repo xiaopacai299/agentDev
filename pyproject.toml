@@ -1,7 +1,7 @@
 [project]
-name = "agentdev"
+name = "wkagent"
 version = "0.1.0"
-description = "LangChain agent MVP"
+description = "终端里的多 Agent 助手，可选择市面上的 OpenAI 兼容模型"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-agent = "agentdev.cli:main"
+wkagent = "agentdev.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

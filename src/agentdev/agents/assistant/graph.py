@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from agentdev.agents.assistant.tools import calculate, get_current_location, get_current_time, get_weather
 from agentdev.agents.assistant.workspace import bash, edit, read, write
 from agentdev.runtime.loop import run_agent_loop, run_model_round, run_registered_tool
+from agentdev.runtime.memory_store import load_memory, render_memory
 from agentdev.runtime.model import message_text
 from agentdev.runtime.orchestrator import SpawnRequest, build_task_rows, result_of, run_workers, step_for
 from agentdev.runtime.state import AgentState
@@ -23,7 +24,9 @@ PLANNER_INSTRUCTION = """你是规划 Agent。把用户目标分给检索 Agent�
 没有对应需求时，该任务用空字符串。
 代词要结合对话历史。只输出 JSON：
 {"retrieval_task": "", "calculation_task": "", "workspace_task": "", "writing_task": "写给用户的任务"}"""
-REVIEW_INSTRUCTION = """你是审校 Agent。检查草稿是否完成用户目标，并且没有编造检索结果、计算结果和工程结果里不存在的事实。
+REVIEW_INSTRUCTION = """你是审校 Agent。检查草稿是否完成用户目标，并且没有编造来源里不存在的事实。
+允许的来源有四类：长期记忆、检索结果、计算结果、工程结果。长期记忆里已经写明的用户背景、反馈、项目事实和引用，不算编造。
+检索、计算、工程为空时，草稿仍可以只根据长期记忆回答。
 只输出 JSON：{"pass": true, "reason": "通过原因"} 或 {"pass": false, "reason": "缺少什么"}"""
 
 
@@ -131,6 +134,13 @@ def _worker_requests(
     return requests
 
 
+def _with_memory(instruction: str) -> str:
+    block = render_memory(load_memory())
+    if not block:
+        return instruction
+    return f"{block}\n\n{instruction}"
+
+
 # 步骤 4：规划、派出子 Agent、写作和审校
 def run_graph(
     state: AgentState,
@@ -218,7 +228,7 @@ def build_graph_runners(model, on_tool=None, on_token=None):
         user = f"用户目标：{goal}"
         if review_note:
             user += f"\n上一稿未通过审校：{review_note}\n请重新分配任务。"
-        return parse_agent_task(ask_model(model, PLANNER_INSTRUCTION, user), goal)
+        return parse_agent_task(ask_model(model, _with_memory(PLANNER_INSTRUCTION), user), goal)
 
     # 步骤 2：检索 Agent 和计算 Agent 各自使用自己的工具
     def retrieval_fn(task: str) -> str:
@@ -266,7 +276,13 @@ def build_graph_runners(model, on_tool=None, on_token=None):
             user += f"上一稿未通过的原因：{review_note}\n请重写。"
         return stream_model(
             model,
-            "你是写作 Agent。只根据检索结果、计算结果和工程结果回答，不要编造其中没有的事实。使用简体中文。",
+            _with_memory(
+                "你是写作 Agent。只根据长期记忆、检索结果、计算结果和工程结果回答，不要编造这些来源里没有的事实。"
+                "长期记忆里已有的内容，即使检索、计算、工程为空，也要直接回答，不要说无法确认。"
+                "用户记忆决定讲解详略。反馈记忆中的规则要遵守，personal 是个人偏好，project 是项目规范。"
+                "项目记忆里的日期是绝对日期。引用记忆只在需要外部资料时当导航，不要把链接当成已经读过的正文。"
+                "使用简体中文。"
+            ),
             user,
             on_token,
         )
@@ -280,6 +296,7 @@ def build_graph_runners(model, on_tool=None, on_token=None):
     ) -> tuple[bool, str]:
         user = (
             f"用户目标：{goal}\n"
+            f"长期记忆：{render_memory(load_memory()) or '无'}\n"
             f"检索结果：{retrieval or '无'}\n"
             f"计算结果：{calculation or '无'}\n"
             f"工程结果：{workspace or '无'}\n"
